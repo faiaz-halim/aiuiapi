@@ -55,7 +55,7 @@ curl -X POST http://localhost:3000/providers \
     "login_url": "https://mammouth.ai/login",
     "selector_input": "[placeholder=\"Ask your question\"]",
     "selector_submit": "ENTER",
-    "selector_response": "div[class*=\"message_content\"].mistral",
+    "selector_response": "div[class*=\"message_content\"]",
     "selector_new_chat": "a[href=\"/app/a/default\"]",
     "selector_model": "button:has-text(\"Mistral\")"
   }'
@@ -84,6 +84,21 @@ curl -N -X POST http://localhost:3000/v1/chat/completions \
     "model": "Mammouth",
     "messages": [
       { "role": "user", "content": "Explain quantum physics in one sentence." }
+    ],
+    "stream": true
+  }'
+```
+
+Continue local session (If interval is too long it will open new chat)
+
+```bash
+curl -N -X POST http://localhost:3000/v1/chat/completions \
+  -H "Content-Type: application/json" \
+  -d '{
+    "model": "Mammouth",
+    "session_id": "ad04b4db-f5be-42ec-aaed-067da2e9f50b",
+    "messages": [
+      { "role": "user", "content": "Explain quantum superposition in one sentence." }
     ],
     "stream": true
   }'
