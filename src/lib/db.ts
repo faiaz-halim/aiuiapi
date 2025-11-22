@@ -20,8 +20,7 @@ const schema = `
         selector_submit TEXT,
         selector_response TEXT,
         selector_new_chat TEXT,
-        selector_model TEXT,
-        selector_new_chat TEXT
+        selector_model TEXT
     );
 
     CREATE TABLE IF NOT EXISTS sessions (

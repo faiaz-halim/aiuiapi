@@ -288,5 +288,6 @@ playwright/.cache/
 
 data/
 node_modules/
+user_data/
 
 **/*.png
