@@ -1,4 +1,4 @@
-# Browser AI Gateway - Complete Guide
+# Browser AI Gateway - AIUIAPI
 
 This project turns any web-based LLM chat interface (ChatGPT, Mistral, Claude, etc.) into a programmable API. It supports standard OpenAI-compatible streaming, persistent history, and headless browsing.
 
