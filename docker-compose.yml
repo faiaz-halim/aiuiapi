@@ -1,0 +1,16 @@
+version: '3.8'
+
+services:
+  browser-gateway:
+    build: .
+    container_name: browser-ai-gateway
+    restart: unless-stopped
+    ports:
+      - "3000:3000"
+    volumes:
+      # Persist the database and browser profiles (cookies)
+      - ./data:/app/data
+    environment:
+      - NODE_ENV=production
+    # 'init: true' forwards signals helps zombie processes which commonly happen with Playwright
+    init: true

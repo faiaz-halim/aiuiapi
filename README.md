@@ -1,50 +1,51 @@
-# Browser AI Gateway - Getting Started
+# Browser AI Gateway - Complete Guide
 
 This project turns any web-based LLM chat interface (ChatGPT, Mistral, Claude, etc.) into a programmable API. It supports standard OpenAI-compatible streaming, persistent history, and headless browsing.
 
 ## 📂 Project Structure
 
 - **`src/index.ts`**: Main server entry point.
-- **`src/lib/browser.ts`**: Core logic for Playwright automation (stealth mode, clicking, typing).
-- **`src/routes/`**: API endpoints (Chat, Providers, History, OpenAI).
+- **`src/lib/browser.ts`**: Core logic for Playwright automation.
 - **`data/`**: Stores SQLite database and browser profiles (cookies).
+- **`docker-compose.yml`**: Container orchestration.
 
 ---
 
 ## 1. Installation & Setup
 
-### Prerequisites
-- Node.js (v18+)
-- NPM
+### Option A: Docker (Recommended for Usage)
 
-### Install
-1. Install project dependencies:
-   ```bash
-   npm install
-   ```
+1.  **Build and Start:**
+    ```bash
+    docker compose up -d --build
+    ```
+2.  **View Logs:**
+    ```bash
+    docker compose logs -f
+    ```
 
-2. Install Playwright browsers:
-   ```bash
-   npx playwright install chromium
-   ```
+### Option B: Local Node.js (Recommended for Development)
 
-### Run Server
-Start the API server. It will automatically initialize the SQLite database (`data/browser-ai.db`).
+1.  **Install Dependencies:**
+    ```bash
+    npm install
+    npx playwright install chromium
+    ```
+2.  **Start Server:**
+    ```bash
+    npx ts-node src/index.ts
+    ```
 
-```bash
-npx ts-node src/index.ts
-```
-*Server is now listening on `http://localhost:3000`*
+*Server listens on `http://localhost:3000`*
 
 ---
 
-## 2. Register a Provider
+## 2. Configuration (One-Time Setup)
 
-You need to tell the system how to interact with a specific website. You do this once per website.
+### Step 1: Register a Provider
+You must tell the system how to interact with a specific website via a POST request.
 
 **Example: Configuring "Mammouth" (Mistral Wrapper)**
-Run this command in a separate terminal window:
-
 ```bash
 curl -X POST http://localhost:3000/providers \
   -H "Content-Type: application/json" \
@@ -60,115 +61,152 @@ curl -X POST http://localhost:3000/providers \
   }'
 ```
 
-### Configuration Fields
-| Field | Description |
-| :--- | :--- |
-| `name` | Unique ID to call this model (e.g., "GPT4", "Claude"). |
-| `base_url` | The URL where the chat interface lives. |
-| `login_url` | The login page URL (used by the login helper). |
-| `selector_input` | CSS selector for the chat input box. |
-| `selector_submit` | CSS selector for the send button, or `"ENTER"` to press the Enter key. |
-| `selector_response`| CSS selector for the AI response bubbles. |
-| `selector_new_chat`| (Optional) CSS selector to click to reset context. |
-| `selector_model` | (Optional) CSS selector/text to ensure correct model is selected. |
+### Step 2: Authentication (The "Human" Step)
+Since you cannot solve CAPTCHAs in Docker easily, you must log in via your host machine once. The cookies are shared via the `./data` volume.
+
+1.  **Stop Docker** (if running): `docker compose down`
+2.  **Run Helper:** `npx ts-node src/login-helper.ts`
+3.  **Action:** Select provider ID (e.g., 1). A browser opens. Log in manually. Close the window.
+4.  **Restart Docker:** `docker compose up -d`
 
 ---
 
-## 3. Login (The "Human" Step)
+## 3. Usage Examples
 
-Since these sites require authentication, you must log in manually **once**. The browser will save your cookies to `data/profiles/`.
+### Type A: OpenAI Compatible API (Standard)
+Best for integrating with existing tools (LangChain, AutoGen, VS Code extensions).
 
-1.  **Run the Login Helper:**
-    ```bash
-    npx ts-node src/login-helper.ts
-    ```
-2.  **Select the Provider** (e.g., Enter `1`).
-3.  **Action:**
-    - A Chrome window will appear.
-    - Log in to the website normally.
-    - Wait until you see the main chat interface.
-    - **Close the browser window.**
-    - Press `Ctrl+C` in your terminal to exit the helper.
-
----
-
-## 4. Chatting
-
-You have two ways to interact with the system.
-
-### Option A: Internal API (Direct Control)
-Good for testing and explicit control over headless/headful modes.
-
-**1. Start New Chat (Headful - see it happen):**
-```bash
-curl -N -X POST http://localhost:3000/chat \
-  -H "Content-Type: application/json" \
-  -d '{
-    "provider_id": 1,
-    "message": "Hello Neo.",
-    "headless": false,
-    "new_chat": true
-  }'
-```
-
-**2. Continue Chat (Headless - background):**
-```bash
-curl -N -X POST http://localhost:3000/chat \
-  -H "Content-Type: application/json" \
-  -d '{
-    "provider_id": 1,
-    "message": "What is the Matrix?",
-    "headless": true,
-    "new_chat": false
-  }'
-```
-
-### Option B: OpenAI Compatible API
-Standard format for integrating with tools like LangChain, AutoGen, or VS Code extensions.
-
-**Endpoint:** `http://localhost:3000/v1/chat/completions`
-
+#### 1. cURL (OpenAI Format)
 ```bash
 curl -N -X POST http://localhost:3000/v1/chat/completions \
   -H "Content-Type: application/json" \
   -d '{
     "model": "Mammouth",
     "messages": [
-      { "role": "user", "content": "Write a python script to reverse a string." }
+      { "role": "user", "content": "Explain quantum physics in one sentence." }
     ],
-    "stream": true,
-    "headless": false
+    "stream": true
   }'
 ```
-*Note: You can add `"headless": false` to the JSON body to watch the interaction, even though it's not part of the standard OpenAI spec.*
+
+#### 2. Python (using official `openai` library)
+```python
+from openai import OpenAI
+
+client = OpenAI(
+    base_url="http://localhost:3000/v1",
+    api_key="not-needed"
+)
+
+response = client.chat.completions.create(
+    model="Mammouth", # Must match the "name" used in Step 1
+    messages=[{"role": "user", "content": "Write a haiku about coding."}],
+    stream=True
+)
+
+for chunk in response:
+    if chunk.choices[0].delta.content:
+        print(chunk.choices[0].delta.content, end="", flush=True)
+```
+
+#### 3. Node.js (using official `openai` library)
+```javascript
+import OpenAI from 'openai';
+
+const client = new OpenAI({
+  baseURL: 'http://localhost:3000/v1',
+  apiKey: 'dummy',
+});
+
+async function main() {
+  const stream = await client.chat.completions.create({
+    model: 'Mammouth',
+    messages: [{ role: 'user', content: 'Hello world in C++' }],
+    stream: true,
+  });
+
+  for await (const chunk of stream) {
+    process.stdout.write(chunk.choices[0]?.delta?.content || '');
+  }
+}
+
+main();
+```
 
 ---
 
-## 5. Managing History
+### Type B: Native API (Direct Control)
+Best for debugging or if you need specific browser control flags (like toggling headless mode per request).
 
-All conversations are saved to the local SQLite database.
+#### 1. Start New Chat (Streaming)
+```bash
+curl -N -X POST http://localhost:3000/chat \
+  -H "Content-Type: application/json" \
+  -d '{
+    "provider_id": 1,
+    "message": "Hello!",
+    "headless": true,
+    "new_chat": true
+  }'
+```
 
-- **List All Sessions:**
-  ```bash
-  curl http://localhost:3000/session/list
-  ```
+#### 2. Continue Conversation (Keep Context)
+Setting `new_chat: false` keeps the current browser tab active.
+```bash
+curl -N -X POST http://localhost:3000/chat \
+  -H "Content-Type: application/json" \
+  -d '{
+    "provider_id": 1,
+    "message": "Tell me more about that.",
+    "headless": true,
+    "new_chat": false
+  }'
+```
 
-- **Get Chat Log for Session #1:**
-  ```bash
-  curl http://localhost:3000/session/1/history
-  ```
+#### 3. Debug Mode (Watch the Browser)
+Set `headless: false` to see the browser pop up (works best on Local Node.js, not Docker).
+```bash
+curl -N -X POST http://localhost:3000/chat \
+  -H "Content-Type: application/json" \
+  -d '{
+    "provider_id": 1,
+    "message": "Draw an ASCII cat.",
+    "headless": false,
+    "new_chat": true
+  }'
+```
 
 ---
 
-## 6. Debugging
+## 4. Managing History
 
-If the bot isn't typing or reading responses, your CSS selectors might be outdated.
+All interactions are saved to the internal SQLite database.
 
-1.  **Run the Debugger:**
-    ```bash
-    npx ts-node src/debug-selector.ts
-    ```
-2.  **Action:**
-    - This opens the browser.
-    - It attempts to type a test message.
-    - It **keeps the window open** so you can Right Click -> Inspect Element to fix your selectors.
+**1. List All Sessions**
+```bash
+curl http://localhost:3000/session/list
+```
+
+**2. Get Specific Chat Log**
+```bash
+# Replace '1' with the actual session ID
+curl http://localhost:3000/session/1/history
+```
+
+**3. Delete a Session**
+```bash
+curl -X DELETE http://localhost:3000/session/1
+```
+
+
+---
+
+## 5. Troubleshooting
+
+### "Browser Closed" in Docker?
+Docker runs in `headless` mode by default. If the website detects headless browsers (stealth failure):
+1.  Ensure you are using the `puppeteer-extra-plugin-stealth` (included in this project).
+2.  Try refreshing your cookies by running `src/login-helper.ts` on your host machine again.
+
+### Database Locked?
+If you switch between Docker and Local Node.js frequently, ensure the other process is fully stopped. SQLite files don't like being accessed by two systems simultaneously.
