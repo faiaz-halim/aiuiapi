@@ -287,3 +287,6 @@ playwright-report/
 playwright/.cache/
 
 data/
+node_modules/
+
+**/*.png
