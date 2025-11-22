@@ -1,162 +1,174 @@
 import { chromium } from 'playwright-extra';
 import stealth from 'puppeteer-extra-plugin-stealth';
+import { BrowserContext, Page } from 'playwright';
 import path from 'path';
 import fs from 'fs';
-import { Page, BrowserContext, Browser } from 'playwright';
+import { db } from './db';
 
-// Apply stealth plugin to all chromium launches
 chromium.use(stealth());
 
 class BrowserService {
-    private browser: Browser | null = null;
-    private context: BrowserContext | null = null;
-    private page: Page | null = null;
-    private currentProfileId: string | null = null;
-    private isHeadless: boolean = true;
+    private browserContexts: Map<number, BrowserContext> = new Map();
+    private pages: Map<string, Page> = new Map();
 
-    async init(profileId: string, headless: boolean = true) {
-        const profilePath = path.join(__dirname, '../../data/profiles', profileId);
+    constructor() {
+        // Ensure user data dir exists
+        const userDataDir = path.join(process.cwd(), 'user_data');
+        if (!fs.existsSync(userDataDir)) {
+            fs.mkdirSync(userDataDir, { recursive: true });
+        }
+    }
 
-        if (!fs.existsSync(profilePath)) {
-            fs.mkdirSync(profilePath, { recursive: true });
+    private async getProvider(id: number) {
+        return db.prepare('SELECT * FROM providers WHERE id = ?').get(id) as any;
+    }
+
+    /**
+     * Creates or retrieves a browser context with Stealth settings.
+     * This is crucial for bypassing Google's "Secure App" checks.
+     */
+    private async getContext(providerId: number, headless: boolean = true): Promise<BrowserContext> {
+        if (this.browserContexts.has(providerId)) {
+            return this.browserContexts.get(providerId)!;
         }
 
-        const needsRestart =
-            this.browser &&
-            (this.currentProfileId !== profileId || this.isHeadless !== headless);
+        // Unique folder for this provider's cookies/localstorage
+        const userDataDir = path.join(process.cwd(), 'user_data', `provider_${providerId}`);
 
-        if (needsRestart) {
-            await this.close();
-        }
-
-        if (this.browser) return;
-
-        console.log(`[Browser] Launching (Headless: ${headless}, Profile: ${profileId})...`);
-
-        this.context = await chromium.launchPersistentContext(profilePath, {
+        // === STEALTH LAUNCH CONFIGURATION === Local Chrome
+        // const context = await chromium.launchPersistentContext(userDataDir, {
+        //     headless: headless,
+        //     channel: 'chrome', // Tries to use local Google Chrome (More trusted by Google)
+        //     viewport: null,    // Allows window to resize naturally
+        //     args: [
+        //         '--disable-blink-features=AutomationControlled', // Hides "I am a robot" flag
+        //         '--no-sandbox',
+        //         '--disable-setuid-sandbox',
+        //         '--disable-infobars',
+        //         '--start-maximized',
+        //     ],
+        //     ignoreDefaultArgs: ['--enable-automation'], // Hides the "Chrome is being controlled" banner
+        //     userAgent: 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36'
+        // });
+        const context = await chromium.launchPersistentContext(userDataDir, {
             headless: headless,
             args: [
                 '--no-sandbox',
                 '--disable-setuid-sandbox',
-                '--disable-blink-features=AutomationControlled'
+                '--disable-dev-shm-usage',
+                '--disable-blink-features=AutomationControlled',
+                '--disable-infobars',
+                '--window-size=1280,720'
             ],
-            viewport: { width: 1280, height: 720 }
+            viewport: { width: 1280, height: 720 },
+            userAgent: 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36'
         });
-
-        this.page = this.context.pages().length > 0
-            ? this.context.pages()[0]
-            : await this.context.newPage();
-
-        this.browser = this.context as unknown as Browser;
-        this.currentProfileId = profileId;
-        this.isHeadless = headless;
-    }
-
-    async getPage(): Promise<Page> {
-        if (!this.page) throw new Error('Browser not initialized');
-        return this.page;
-    }
-
-    async close() {
-        if (this.context) {
-            await this.context.close();
-            this.context = null;
-            this.browser = null;
-            this.page = null;
-            this.currentProfileId = null;
+        const cookiePath = path.join(process.cwd(), 'data', 'cookies.json');
+        if (fs.existsSync(cookiePath)) {
+            console.log('[Browser] Loading cookies from JSON file...');
+            const cookieData = fs.readFileSync(cookiePath, 'utf8');
+            const cookies = JSON.parse(cookieData);
+            await context.addCookies(cookies);
         }
+
+        this.browserContexts.set(providerId, context);
+        return context;
     }
 
-    async click(selector: string) {
-        const page = await this.getPage();
-        try {
-            await page.waitForSelector(selector, { state: 'visible', timeout: 3000 });
-            await page.click(selector);
-        } catch (e) {
-            console.warn(`[Browser] Click failed for ${selector}`);
-        }
+    // === NEW: Helper for manual scripts (Login/Debug) ===
+    public async launchPage(providerId: number, headless: boolean = false): Promise<Page> {
+        // Force headless=false if you call this manually for debugging
+        const context = await this.getContext(providerId, headless);
+
+        // Return the first page if exists, or create new
+        const pages = context.pages();
+        if (pages.length > 0) return pages[0];
+
+        return await context.newPage();
     }
 
-    async goto(url: string, startupSelector?: string) {
-        const page = await this.getPage();
-        if (!page.url().includes(url)) {
-            await page.goto(url, { waitUntil: 'domcontentloaded' });
-        }
-        if (startupSelector) {
+    // === CORE: API Response Generator ===
+    public async *generateResponse(sessionId: string, providerId: number, prompt: string, headless: boolean = true): AsyncGenerator<string, void, unknown> {
+        const provider = await this.getProvider(providerId);
+        if (!provider) throw new Error(`Provider ${providerId} not found`);
+
+        const context = await this.getContext(providerId, headless);
+
+        // Reuse page for session or create new
+        let page = this.pages.get(sessionId);
+
+        if (!page || page.isClosed()) {
+            page = await context.newPage();
+            this.pages.set(sessionId, page);
+
             try {
-                await page.waitForSelector(startupSelector, { state: 'visible', timeout: 5000 });
-                await page.click(startupSelector);
-            } catch (e) { /* ignore */ }
-        }
-    }
+                console.log(`[Browser] Navigating to ${provider.base_url}`);
+                await page.goto(provider.url || provider.base_url);
 
-    // --- NEW HELPER ---
-    async getCount(selector: string): Promise<number> {
-        const page = await this.getPage();
-        return await page.$$eval(selector, els => els.length);
-    }
+                // Attempt to wait for input. If fail, check login.
+                try {
+                    await page.waitForSelector(provider.selector_input, { timeout: 8000 });
+                } catch (e) {
+                    const url = page.url();
+                    console.log(`[Browser] Input not found. Current URL: ${url}`);
 
-    async sendMessage(selectorInput: string, selectorSubmit: string, message: string) {
-        const page = await this.getPage();
-        await page.waitForSelector(selectorInput, { state: 'visible' });
-        await page.click(selectorInput);
-        await page.fill(selectorInput, message);
-        await page.waitForTimeout(500);
-
-        if (selectorSubmit === 'ENTER') {
-            await page.keyboard.press('Enter');
+                    if (url.includes('login') || url.includes('signin') || url.includes('auth')) {
+                         throw new Error(`Browser is on login page (${url}). Please run 'npm run login' first.`);
+                    }
+                }
+            } catch (err) {
+                console.error(`[Browser] Error initializing page: ${err}`);
+                throw err;
+            }
         } else {
-            await page.click(selectorSubmit);
-        }
-        await page.mouse.move(0, 0);
-    }
-
-    // --- UPDATED STREAM RESPONSE ---
-    // Now accepts 'startCount' to ensure we are reading the NEW bubble, not the old one.
-    async streamResponse(selectorResponse: string, startCount: number, onChunk: (chunk: string) => void): Promise<string> {
-        const page = await this.getPage();
-        console.log(`[Browser] Waiting for response bubble (Previous count: ${startCount})...`);
-
-        try {
-            // Wait specifically for the element count to INCREASE
-            await page.waitForFunction(
-                ({ selector, count }) => document.querySelectorAll(selector).length > count,
-                { selector: selectorResponse, count: startCount },
-                { timeout: 30000 }
-            );
-        } catch (e) {
-            throw new Error(`Timeout: New response bubble not found.`);
+            await page.bringToFront();
         }
 
-        let previousText = '';
-        let currentText = '';
-        let stableCount = 0;
+        // Input Prompt
+        await page.waitForSelector(provider.selector_input);
+        await page.fill(provider.selector_input, prompt);
 
-        // Max wait ~30s (300 * 100ms)
-        for (let i = 0; i < 300; i++) {
-            await page.waitForTimeout(100);
+        // === FIX: Handle "ENTER" as a keystroke, not a selector ===
+        if (provider.selector_submit === 'ENTER') {
+            await page.keyboard.press('Enter');
+        } else if (provider.selector_submit) {
+            // Only click if it's a real CSS selector
+            await page.click(provider.selector_submit);
+        } else {
+            // Fallback default
+            await page.keyboard.press('Enter');
+        }
 
-            const elements = await page.$$(selectorResponse);
-            // Always grab the LAST element
+        // Wait for response container
+        await page.waitForSelector(provider.selector_response);
+
+        let lastText = "";
+        let noChangeCount = 0;
+        const maxNoChange = 30; // ~6 seconds of silence
+
+        while (true) {
+            await new Promise(r => setTimeout(r, 200));
+
+            // Select all response bubbles
+            const elements = await page.$$(provider.selector_response);
+            if (elements.length === 0) continue;
+
+            // Assuming the last bubble is the new answer
             const lastElement = elements[elements.length - 1];
+            const currentText = await lastElement.innerText();
 
-            currentText = await lastElement.innerText();
-
-            if (currentText.length > previousText.length) {
-                const newChunk = currentText.substring(previousText.length);
-                onChunk(newChunk);
-                previousText = currentText;
-                stableCount = 0;
+            if (currentText !== lastText) {
+                // Yield only the new chunk
+                const newContent = currentText.substring(lastText.length);
+                lastText = currentText;
+                noChangeCount = 0;
+                if (newContent) yield newContent;
             } else {
-                stableCount++;
-            }
-
-            // If no text change for 2 seconds, assume done
-            if (stableCount > 20 && currentText.length > 0) {
-                break;
+                noChangeCount++;
+                // If text hasn't changed for ~6 seconds, assume generation is done
+                if (noChangeCount > maxNoChange) break;
             }
         }
-        return currentText;
     }
 }
 
